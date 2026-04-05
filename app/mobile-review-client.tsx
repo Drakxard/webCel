@@ -384,7 +384,6 @@ export function MobileReviewClient({ deviceId, signature, initialPayload, initia
                     ) : null}
                     {activeTask.material ? <span className="max-w-[16rem] truncate border border-black px-2 py-1">{activeTask.material.fileName}</span> : null}
                   </div>
-                  {activeTask.pair ? <p className="text-sm leading-relaxed text-black/80">{activeTask.instruction}</p> : null}
                 </section>
               ) : null}
 
