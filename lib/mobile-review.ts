@@ -4,6 +4,7 @@ import type { PracticeMaterialCoverageStatus, SubjectSixDayVector } from "@/lib/
 import { getSubjectSixDayVector, listSubjectSixDayVectors } from "@/lib/audio-coverage"
 import { downloadDriveFile } from "@/lib/google-drive"
 import { downloadR2Object, isR2ObjectKey } from "@/lib/r2"
+import { getSynthesisTheoryWeekday } from "@/lib/synthesis-schedule"
 import { getSubjectById, isValidSubjectId } from "@/lib/subjects"
 import { getWeekNumberForDate, getWeekdayIndexFromDateKey, parseDateKey } from "@/lib/subject-utils"
 
@@ -32,6 +33,7 @@ export type MobileReviewTask = {
   subjectName: string
   weekNumber: number
   vectorDay: number | null
+  theoryCountdownDays: number | null
   instruction: string
   staleReason: SubjectSixDayVector["staleReason"]
   lastInteractionAt: string | null
@@ -196,6 +198,20 @@ function mapSlotRow(row: SlotRow): MobileReviewSlot {
 
 function normalizeTimeValue(value: string) {
   return String(value || "").trim()
+}
+
+function getWeekdayIndexForBuenosAires(now = new Date()) {
+  return getWeekdayIndexFromDateKey(getBuenosAiresDateKey(now))
+}
+
+function getTheoryCountdownDays(subjectId: string, now = new Date()) {
+  const theoryWeekday = getSynthesisTheoryWeekday(subjectId)
+  if (typeof theoryWeekday !== "number") {
+    return null
+  }
+
+  const todayWeekday = getWeekdayIndexForBuenosAires(now)
+  return (theoryWeekday - todayWeekday + 6 + 7) % 7
 }
 
 function isValidTimeValue(value: string) {
@@ -396,10 +412,10 @@ function resolvePairSelection(params: {
   candidates: PairRow[]
   subjectId: string
   weekNumber: number
-  advancePair: boolean
+  pairStep: -1 | 0 | 1
   allowStoredPair: boolean
 }) {
-  const { state, candidates, subjectId, weekNumber, advancePair, allowStoredPair } = params
+  const { state, candidates, subjectId, weekNumber, pairStep, allowStoredPair } = params
   if (candidates.length === 0) {
     return {
       selectedRow: null,
@@ -420,9 +436,9 @@ function resolvePairSelection(params: {
     debugReason = "stored_pair_not_found"
   }
 
-  if (advancePair) {
-    const baseIndex = currentStoredIndex >= 0 ? currentStoredIndex : -1
-    selectedIndex = (baseIndex + 1 + candidates.length) % candidates.length
+  if (pairStep !== 0) {
+    const baseIndex = currentStoredIndex >= 0 ? currentStoredIndex : pairStep > 0 ? -1 : 0
+    selectedIndex = (baseIndex + pairStep + candidates.length) % candidates.length
   } else if (selectedIndex < 0) {
     selectedIndex = 0
   }
@@ -440,12 +456,13 @@ function buildTask(params: {
   subjectId: string
   weekNumber: number
   vector: SubjectSixDayVector | null
+  now?: Date
   instruction: string
   material: MobileReviewTask["material"]
   pair: MobileReviewPair | null
   fallbackPair?: MobileReviewPair | null
 }) {
-  const { kind, subjectId, weekNumber, vector, instruction, material, pair, fallbackPair = null } = params
+  const { kind, subjectId, weekNumber, vector, now = new Date(), instruction, material, pair, fallbackPair = null } = params
   const subject = getSubjectById(subjectId)
   return {
     kind,
@@ -453,6 +470,7 @@ function buildTask(params: {
     subjectName: subject?.name.replace(/\n/g, " ") || subjectId,
     weekNumber,
     vectorDay: vector?.currentDay ?? null,
+    theoryCountdownDays: getTheoryCountdownDays(subjectId, now),
     instruction,
     staleReason: vector?.staleReason ?? [],
     lastInteractionAt: vector?.lastInteractionAt ?? null,
@@ -489,9 +507,9 @@ function resolveSubjectSelection(params: {
   state: MobileReviewStateRow
   vectors: SubjectSixDayVector[]
   weekNumber: number
-  advanceSubject: boolean
+  subjectStep: -1 | 0 | 1
 }) {
-  const { state, vectors, weekNumber, advanceSubject } = params
+  const { state, vectors, weekNumber, subjectStep } = params
   if (vectors.length === 0) {
     return null
   }
@@ -501,9 +519,9 @@ function resolveSubjectSelection(params: {
       ? vectors.findIndex((vector) => vector.subjectId === state.current_subject_id)
       : -1
 
-  if (advanceSubject) {
-    const baseIndex = currentIndex >= 0 ? currentIndex : -1
-    return vectors[(baseIndex + 1 + vectors.length) % vectors.length] ?? null
+  if (subjectStep !== 0) {
+    const baseIndex = currentIndex >= 0 ? currentIndex : subjectStep > 0 ? -1 : 0
+    return vectors[(baseIndex + subjectStep + vectors.length) % vectors.length] ?? null
   }
 
   return vectors[currentIndex >= 0 ? currentIndex : 0] ?? null
@@ -511,15 +529,15 @@ function resolveSubjectSelection(params: {
 
 export async function resolveMobileReviewPair(params: {
   deviceId: string
-  advanceSubject?: boolean
-  advancePair?: boolean
+  subjectStep?: -1 | 0 | 1
+  pairStep?: -1 | 0 | 1
   now?: Date
 }): Promise<MobileReviewResolveResult> {
-  const { deviceId, advanceSubject = false, advancePair = false, now = new Date() } = params
+  const { deviceId, subjectStep = 0, pairStep = 0, now = new Date() } = params
   const state = await getOrCreateMobileReviewState(deviceId)
   const weekNumber = getBuenosAiresWeekNumber(now)
   const activeVectors = await listSubjectSixDayVectors({ weekNumber, includeInactive: false, now })
-  const selectedVector = resolveSubjectSelection({ state, vectors: activeVectors, weekNumber, advanceSubject })
+  const selectedVector = resolveSubjectSelection({ state, vectors: activeVectors, weekNumber, subjectStep })
   if (!selectedVector) {
     return { state, activeSlot: null, task: null, pair: null, totalPairs: 0, currentIndex: 0, debugReason: "no_valid_pairs" }
   }
@@ -559,7 +577,8 @@ export async function resolveMobileReviewPair(params: {
       subjectId,
       weekNumber,
       vector,
-      instruction: `Falta sembrar una dupla util en ${uncoveredMaterial.fileName}.`,
+      now,
+      instruction: "Falta sembrar una dupla util.",
       material: {
         id: uncoveredMaterial.id,
         fileName: uncoveredMaterial.fileName,
@@ -594,8 +613,8 @@ export async function resolveMobileReviewPair(params: {
       candidates: materialCandidates,
       subjectId,
       weekNumber,
-      advancePair,
-      allowStoredPair: !advanceSubject,
+      pairStep,
+      allowStoredPair: subjectStep === 0,
     })
     const pair = selection.selectedRow ? mapPairRow(selection.selectedRow) : null
     const task = buildTask({
@@ -603,7 +622,8 @@ export async function resolveMobileReviewPair(params: {
       subjectId,
       weekNumber,
       vector,
-      instruction: `Evalua el concepto mas util de ${coveredMaterial.fileName}.`,
+      now,
+      instruction: "Evalua el concepto mas util.",
       material: {
         id: coveredMaterial.id,
         fileName: coveredMaterial.fileName,
@@ -631,6 +651,7 @@ export async function resolveMobileReviewPair(params: {
       subjectId,
       weekNumber,
       vector,
+      now,
       instruction: "Trabaja el ancla conceptual mas fuerte de esta materia.",
       material: null,
       pair: anchorPair,
@@ -652,6 +673,7 @@ export async function resolveMobileReviewPair(params: {
     subjectId,
     weekNumber,
     vector,
+    now,
     instruction: vector?.startDate
       ? "Esta materia sigue sin cobertura auditiva minima util."
       : "Todavia no hay practica suficiente cargada para activar el vector de esta materia.",
@@ -750,7 +772,7 @@ export async function getMobileReviewStatus(deviceId: string, now = new Date()) 
   const state = await getOrCreateMobileReviewState(deviceId)
   const weekNumber = getBuenosAiresWeekNumber(now)
   const activeVectors = await listSubjectSixDayVectors({ weekNumber, includeInactive: false, now })
-  const selectedVector = resolveSubjectSelection({ state, vectors: activeVectors, weekNumber, advanceSubject: false })
+  const selectedVector = resolveSubjectSelection({ state, vectors: activeVectors, weekNumber, subjectStep: 0 })
   const subject = selectedVector ? getSubjectById(selectedVector.subjectId) : null
 
   return {

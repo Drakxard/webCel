@@ -12,12 +12,13 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => null)
     const deviceId = typeof body?.device === "string" ? body.device.trim() : ""
     const signature = typeof body?.sig === "string" ? body.sig.trim() : ""
+    const subjectStep: -1 | 1 = body?.direction === "backward" ? -1 : 1
     if (!deviceId) return badRequest("Missing device")
     if (!verifyMobileReviewSignature(deviceId, signature)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const resolved = await resolveMobileReviewPair({ deviceId, advanceSubject: true })
+    const resolved = await resolveMobileReviewPair({ deviceId, subjectStep })
     if (!resolved.task) {
       return NextResponse.json({
         task: null,
