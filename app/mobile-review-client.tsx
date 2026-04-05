@@ -384,14 +384,14 @@ export function MobileReviewClient({ deviceId, signature, initialPayload, initia
                     ) : null}
                     {activeTask.material ? <span className="max-w-[16rem] truncate border border-black px-2 py-1">{activeTask.material.fileName}</span> : null}
                   </div>
-                  <p className="text-sm leading-relaxed text-black/80">{activeTask.instruction}</p>
+                  {activeTask.pair ? <p className="text-sm leading-relaxed text-black/80">{activeTask.instruction}</p> : null}
                 </section>
               ) : null}
 
               {activePair ? (
                 <>
                   <section className="space-y-2">
-                    <p className="text-[1.9rem] leading-none">{activeTask?.kind === "subject_anchor" ? "Ancla" : "Pregunta"}</p>
+                    <p className="text-[1.9rem] leading-none">Pregunta</p>
                     <audio
                       src={activePair.questionAudioUrl}
                       preload="metadata"

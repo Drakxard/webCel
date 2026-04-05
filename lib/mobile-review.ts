@@ -106,10 +106,11 @@ type PairRow = {
   subject_id: string
   week_number: number
   session_date: string | Date
-  material_id: number | null
-  file_name: string | null
-  question_is_featured: boolean
-  answer_is_featured: boolean
+  material_id: number
+  file_name: string
+  material_created_at: string | Date
+  material_session_date: string | Date
+  material_is_checkup_done: boolean
   question_entry_id: number
   question_title: string | null
   answer_entry_id: number
@@ -274,6 +275,19 @@ function mapPairRow(row: PairRow): MobileReviewPair {
   }
 }
 
+function comparePairSequence(left: PairRow, right: PairRow) {
+  const materialCreatedAt = String(left.material_created_at).localeCompare(String(right.material_created_at))
+  if (materialCreatedAt !== 0) return materialCreatedAt
+
+  const materialSessionDate = normalizeSessionDateKey(left.material_session_date).localeCompare(normalizeSessionDateKey(right.material_session_date))
+  if (materialSessionDate !== 0) return materialSessionDate
+
+  const pairSessionDate = normalizeSessionDateKey(left.session_date).localeCompare(normalizeSessionDateKey(right.session_date))
+  if (pairSessionDate !== 0) return pairSessionDate
+
+  return left.pair_id.localeCompare(right.pair_id)
+}
+
 export async function getOrCreateMobileReviewState(deviceId: string) {
   const normalizedDeviceId = String(deviceId || "").trim()
   if (!normalizedDeviceId) {
@@ -370,8 +384,9 @@ async function selectPairCandidates(params: {
       question.session_date,
       question.subject_day_material_id AS material_id,
       materials.file_name,
-      question.is_featured AS question_is_featured,
-      answer.is_featured AS answer_is_featured,
+      materials.created_at AS material_created_at,
+      materials.session_date AS material_session_date,
+      materials.is_checkup_done AS material_is_checkup_done,
       question.id AS question_entry_id,
       question.custom_title AS question_title,
       answer.id AS answer_entry_id,
@@ -384,16 +399,14 @@ async function selectPairCandidates(params: {
     WHERE question.pair_id IS NOT NULL
       AND question.pair_role = 'question'
       AND answer.pair_role = 'answer'
+      AND question.subject_day_material_id IS NOT NULL
       AND question.subject_id = ${subjectId}
       AND answer.subject_id = question.subject_id
       AND question.week_number = ${weekNumber}
       AND answer.week_number = question.week_number
       AND question.session_date = answer.session_date
-      AND (
-        (question.subject_day_material_id IS NULL AND answer.subject_day_material_id IS NULL)
-        OR question.subject_day_material_id = answer.subject_day_material_id
-      )
-    ORDER BY question.session_date DESC, question.pair_id ASC
+      AND question.subject_day_material_id = answer.subject_day_material_id
+    ORDER BY materials.created_at ASC, materials.session_date ASC, question.session_date ASC, question.pair_id ASC
   ` as PairRow[]
 
   return rows
@@ -551,87 +564,41 @@ export async function resolveMobileReviewPair(params: {
       weekNumber,
       now,
     }))
-  const allPairs = await selectPairCandidates({
+  const allPairs = (await selectPairCandidates({
     subjectId,
     weekNumber,
-  })
+  })).sort(comparePairSequence)
 
-  const anchorCandidates = [...allPairs].sort((left, right) => {
-    const leftFeatured = Number(left.question_is_featured || left.answer_is_featured)
-    const rightFeatured = Number(right.question_is_featured || right.answer_is_featured)
-    if (leftFeatured !== rightFeatured) return rightFeatured - leftFeatured
-    const leftAbstract = Number(left.material_id == null)
-    const rightAbstract = Number(right.material_id == null)
-    if (leftAbstract !== rightAbstract) return rightAbstract - leftAbstract
-    return compareSessionDateDesc(left.session_date, right.session_date)
-  })
-  const anchorPair = anchorCandidates.length > 0 ? mapPairRow(anchorCandidates[0]) : null
-
-  const uncoveredMaterial = vector?.practiceMaterials.find(
-    (material) => vector.relevantPracticeMaterialIds.includes(material.id) && material.status !== "cubierto_minimo"
-  ) ?? null
-
-  if (uncoveredMaterial) {
-    const task = buildTask({
-      kind: "coverage_gap",
-      subjectId,
-      weekNumber,
-      vector,
-      now,
-      instruction: "Falta sembrar una dupla util.",
-      material: {
-        id: uncoveredMaterial.id,
-        fileName: uncoveredMaterial.fileName,
-        sessionDate: uncoveredMaterial.sessionDate,
-        status: uncoveredMaterial.status,
-        isCheckupDone: uncoveredMaterial.isCheckupDone,
-      },
-      pair: null,
-      fallbackPair: anchorPair,
-    })
-
-    const nextState = await updateMobileReviewStatePair({ state, subjectId, weekNumber, pair: null })
-    return {
-      state: nextState,
-      activeSlot,
-      task,
-      pair: null,
-      totalPairs: 0,
-      currentIndex: 0,
-      debugReason: "no_valid_pairs",
-    }
-  }
-
-  const coveredMaterial = vector?.practiceMaterials.find(
-    (material) => vector.relevantPracticeMaterialIds.includes(material.id) && material.status === "cubierto_minimo"
-  ) ?? null
-
-  if (coveredMaterial) {
-    const materialCandidates = allPairs.filter((row) => row.material_id === coveredMaterial.id)
+  if (allPairs.length > 0) {
     const selection = resolvePairSelection({
       state,
-      candidates: materialCandidates,
+      candidates: allPairs,
       subjectId,
       weekNumber,
       pairStep,
       allowStoredPair: subjectStep === 0,
     })
-    const pair = selection.selectedRow ? mapPairRow(selection.selectedRow) : null
+    const selectedRow = selection.selectedRow
+    const pair = selectedRow ? mapPairRow(selectedRow) : null
+    const materialCoverage = vector?.practiceMaterials.find((material) => material.id === selectedRow?.material_id) ?? null
     const task = buildTask({
       kind: "material_pair",
       subjectId,
       weekNumber,
       vector,
       now,
-      instruction: "Evalua el concepto mas util.",
-      material: {
-        id: coveredMaterial.id,
-        fileName: coveredMaterial.fileName,
-        sessionDate: coveredMaterial.sessionDate,
-        status: coveredMaterial.status,
-        isCheckupDone: coveredMaterial.isCheckupDone,
-      },
+      instruction: "Recorre las duplas de esta semana.",
+      material: selectedRow
+        ? {
+            id: selectedRow.material_id,
+            fileName: selectedRow.file_name,
+            sessionDate: normalizeSessionDateKey(selectedRow.material_session_date),
+            status: materialCoverage?.status ?? "sin_tocar",
+            isCheckupDone: selectedRow.material_is_checkup_done,
+          }
+        : null,
       pair,
+      fallbackPair: null,
     })
     const nextState = await updateMobileReviewStatePair({ state, subjectId, weekNumber, pair })
     return {
@@ -645,38 +612,13 @@ export async function resolveMobileReviewPair(params: {
     }
   }
 
-  if (anchorPair) {
-    const task = buildTask({
-      kind: "subject_anchor",
-      subjectId,
-      weekNumber,
-      vector,
-      now,
-      instruction: "Trabaja el ancla conceptual mas fuerte de esta materia.",
-      material: null,
-      pair: anchorPair,
-    })
-    const nextState = await updateMobileReviewStatePair({ state, subjectId, weekNumber, pair: anchorPair })
-    return {
-      state: nextState,
-      activeSlot,
-      task,
-      pair: anchorPair,
-      totalPairs: 1,
-      currentIndex: 1,
-      debugReason: undefined,
-    }
-  }
-
   const gapTask = buildTask({
     kind: "coverage_gap",
     subjectId,
     weekNumber,
     vector,
     now,
-    instruction: vector?.startDate
-      ? "Esta materia sigue sin cobertura auditiva minima util."
-      : "Todavia no hay practica suficiente cargada para activar el vector de esta materia.",
+    instruction: "No hay duplas disponibles para esta materia en la semana actual.",
     material: null,
     pair: null,
   })
