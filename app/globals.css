@@ -1,0 +1,20 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+    background: #f1e4a9;
+    color: #000;
+  }
+
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+  }
+}

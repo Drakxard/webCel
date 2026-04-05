@@ -1,0 +1,50 @@
+import { RemoteProviderAuthError } from "@/lib/remote-file-errors"
+
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+
+function requireEnv(name: string) {
+  const value = process.env[name]
+  if (!value) {
+    throw new Error(`Missing environment variable: ${name}`)
+  }
+
+  return value
+}
+
+export function getGoogleOAuthConfig() {
+  return {
+    clientId: requireEnv("GOOGLE_OAUTH_CLIENT_ID"),
+    clientSecret: requireEnv("GOOGLE_OAUTH_CLIENT_SECRET"),
+    redirectUri: process.env.GOOGLE_OAUTH_REDIRECT_URI || "",
+    refreshToken: process.env.GOOGLE_DRIVE_REFRESH_TOKEN || "",
+    scope: DRIVE_SCOPE,
+  }
+}
+
+export async function getGoogleAccessToken() {
+  const { clientId, clientSecret, refreshToken } = getGoogleOAuthConfig()
+  if (!refreshToken) {
+    throw new RemoteProviderAuthError("drive", "Missing environment variable: GOOGLE_DRIVE_REFRESH_TOKEN")
+  }
+
+  const response = await fetch(GOOGLE_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token",
+    }),
+  })
+
+  const payload = await response.json()
+  if (!response.ok || !payload.access_token) {
+    throw new RemoteProviderAuthError("drive", payload.error_description || payload.error || "Failed to refresh Google access token")
+  }
+
+  return payload.access_token as string
+}
